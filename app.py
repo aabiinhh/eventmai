@@ -1,123 +1,179 @@
-from flask import Flask, render_template, request, redirect, url_for, flash
-from flask_sqlalchemy import SQLAlchemy
+from flask import Flask, render_template, request, redirect, url_for, session
+import mysql.connector
 from werkzeug.security import generate_password_hash, check_password_hash
-from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
+
 app = Flask(__name__)
-app.config["SQLALCHEMY_DATABASE_URI"] = "mysql://root:9633251398@localhost/db"
-app.config["SECRET_KEY"] = "secret_key_here"
-db = SQLAlchemy(app)
-login_manager = LoginManager()
-login_manager.init_app(app)
-login_manager.login_view = "login"
+app.secret_key = 'your_secret_key'
 
-class User(UserMixin, db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(255), nullable=False)
-    email = db.Column(db.String(255), nullable=False, unique=True)
-    contact = db.Column(db.String(255))
-    phone_number = db.Column(db.String(20))
-    password = db.Column(db.String(255), nullable=False)
-    is_admin = db.Column(db.Boolean, default=False)
+def get_db_connection():
+    conn = mysql.connector.connect(
+        host='localhost',
+        user='root',
+        password='9633251398',
+        database='event_management'
+        
+    )
+    return conn
 
-class Event(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    title = db.Column(db.String(255), nullable=False)
-    date = db.Column(db.Date, nullable=False)
-    location = db.Column(db.String(255), nullable=False)
-    description = db.Column(db.Text)
-    created_by = db.Column(db.Integer, db.ForeignKey("user.id"))
-    creator = db.relationship("User", backref="events")
+@app.route('/')
+def index():
+    return redirect(url_for('home'))
+  
+   # @app.route('/')
+  #def home():
+#return render_template('base.html')
 
-class EventCreator(db.Model):
-    __tablename__ = "event_creators"
-    event_id = db.Column(db.Integer, db.ForeignKey("event.id"), primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), primary_key=True)
-    event = db.relationship("Event", backref="creators")
-    user = db.relationship("User", backref="created_events")
 
-@login_manager.user_loader
-def load_user(user_id):
-    return User.query.get(int(user_id))
 
-@app.route("/login", methods=["GET", "POST"])
-def login():
-    if request.method == "POST":
-        email = request.form["email"]
-        password = request.form["password"]
-        user = User.query.filter_by(email=email).first()
-        if user and check_password_hash(user.password, password):
-            login_user(user)
-            return redirect(url_for("home"))
-        flash("Invalid email or password")
-    return render_template("login.html")
-
-@app.route("/signup", methods=["GET", "POST"])
+@app.route('/signup', methods=['GET', 'POST'])
 def signup():
-    if request.method == "POST":
-        name = request.form["name"]
-        email = request.form["email"]
-        contact = request.form["contact"]
-        phone_number = request.form["phone_number"]
-        password = generate_password_hash(request.form["password"])
-        user = User(name=name, email=email, contact=contact, phone_number=phone_number, password=password)
-        db.session.add(user)
-        db.session.commit()
-        flash("Account created successfully")
-        return redirect(url_for("login"))
-    return render_template("signin.html")
+    if request.method == 'POST':
+        name = request.form['name']
+        email = request.form['email']
+        contact = request.form['contact']
+        password = generate_password_hash(request.form['password'])
+        phone = request.form['phone']
 
-@app.route("/home")
-@login_required
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('INSERT INTO users (name, email, contact, password, phone) VALUES (%s, %s, %s, %s, %s)', 
+                       (name, email, contact, password, phone))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return redirect(url_for('login'))
+    return render_template('signup.html')
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        email = request.form['email']
+        password = request.form['password']
+
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute('SELECT * FROM users WHERE email = %s', (email,))
+        user = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        if user and check_password_hash(user['password'], password):
+            session['user_id'] = user['id']
+            session['is_admin'] = user['is_admin']
+            return redirect(url_for('home'))
+        else:
+            return 'Invalid credentials'
+    return render_template('login.html')
+
+@app.route('/logout')
+def logout():
+    session.pop('user_id', None)
+    session.pop('is_admin', None)
+    return redirect(url_for('login'))
+
+@app.route('/home')
 def home():
-    events = Event.query.order_by(db.func.rand()).limit(10)
-    return render_template("main.html", events=events)
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute('SELECT * FROM events ORDER BY date DESC LIMIT 10')
+    events = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return render_template('home.html', events=events)
 
-@app.route("/event/<int:event_id>")
-@login_required
-def event(event_id):
-    event = Event.query.get_or_404(event_id)
-    return render_template("detailev.html", event=event)
+@app.route('/event/<int:event_id>')
+def event_detail(event_id):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute('SELECT * FROM events WHERE id = %s', (event_id,))
+    event = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return render_template('event_detail.html', event=event)
 
-@app.route("/profile")
-@login_required
+@app.route('/profile', methods=['GET', 'POST'])
 def profile():
-    user = current_user
-    events = user.events
-    return render_template("dashboard.html", user=user, events=events)
+    user_id = session['user_id']
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    if request.method == 'POST':
+        name = request.form['name']
+        email = request.form['email']
+        contact = request.form['contact']
+        phone = request.form['phone']
+        cursor.execute('UPDATE users SET name = %s, email = %s, contact = %s, phone = %s WHERE id = %s',
+                       (name, email, contact, phone, user_id))
+        conn.commit()
+    cursor.execute('SELECT * FROM users WHERE id = %s', (user_id,))
+    user = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return render_template('user_profile.html', user=user)
 
-@app.route("/create_event", methods=["GET", "POST"])
-@login_required
+@app.route('/create_event', methods=['GET', 'POST'])
 def create_event():
-    if request.method == "POST":
-        title = request.form["title"]
-        date = request.form["date"]
-        location = request.form["location"]
-        description = request.form["description"]
-        event = Event(title=title, date=date, location=location, description=description, created_by=current_user.id)
-        db.session.add(event)
-        db.session.commit()
-        flash("Event created successfully")
-        return redirect(url_for("home"))
-    return render_template("newevent.html")
+    if request.method == 'POST':
+        title = request.form['title']
+        date = request.form['date']
+        location = request.form['location']
+        description = request.form['description']
+        created_by = session['user_id']
 
-@app.route("/admin_dashboard")
-@login_required
-def admin():
-    if not current_user.is_admin:
-        return redirect(url_for("main"))
-    events = Event.query.all()
-    users = User.query.all()
-    return render_template("admin.html", events=events, users=users)
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('INSERT INTO events (title, date, location, description, created_by) VALUES (%s, %s, %s, %s, %s)', 
+                       (title, date, location, description, created_by))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return redirect(url_for('home'))
+    return render_template('create_event.html')
 
-@app.route("/admin_events", methods=["GET", "POST"])
-@login_required
-def admin_events():
-    if not current_user.is_admin:
-        return redirect(url_for("home"))
-    if request.method == "POST":
-        event_id = request.form["event_id"]
-        event = Event.query.get_or_404(event_id)
-        if request.form["action"] == "edit":
-            event.title = request.form["title"]
-            event.date = request.form["date"]
-           
+@app.route('/admin_dashboard')
+def admin_dashboard():
+    if not session.get('is_admin'):
+        return redirect(url_for('home'))
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute('SELECT * FROM events')
+    events = cursor.fetchall()
+    cursor.execute('SELECT * FROM users')
+    users = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return render_template('admin_dashboard.html', events=events, users=users)
+
+@app.route('/delete_event/<int:event_id>')
+def delete_event(event_id):
+    if not session.get('is_admin'):
+        return redirect(url_for('home'))
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('DELETE FROM events WHERE id = %s', (event_id,))
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return redirect(url_for('admin_dashboard'))
+
+@app.route('/delete_user/<int:user_id>')
+def delete_user(user_id):
+    if not session.get('is_admin'):
+        return redirect(url_for('home'))
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('DELETE FROM users WHERE id = %s', (user_id,))
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return redirect(url_for('admin_dashboard'))
+
+@app.route('/favicon.ico')
+def favicon():
+    return '', 204
+
+
+if __name__ == '__main__':
+    app.run(debug=True)
