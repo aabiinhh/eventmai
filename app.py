@@ -18,11 +18,6 @@ def get_db_connection():
 @app.route('/')
 def index():
     return redirect(url_for('home'))
-  
-   # @app.route('/')
-  #def home():
-#return render_template('base.html')
-
 
 
 @app.route('/signup', methods=['GET', 'POST'])
